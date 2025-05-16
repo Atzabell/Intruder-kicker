@@ -1,54 +1,79 @@
 # ---------- MonitorPuertos.ps1 ----------
-
 $tempPath = "$env:TEMP\monitor_temp_script.ps1"
 
 $inner = @'
 $Host.UI.RawUI.WindowTitle = "Monitor de Puertos"
 
-for ($pct = 0; $pct -le 100; $pct += 10) {
-    Write-Progress -Activity 'Inicializando escaneo' `
-                   -Status "$pct% completado" `
-                   -PercentComplete $pct
-    Start-Sleep -Milliseconds 150
-}
-Write-Progress -Activity 'Inicializando escaneo' -Completed
-Write-Host
-
-$netstatOut = netstat -nao
-
-$header = ($netstatOut | Where-Object { $_ -match '^\s*Proto' } | Select-Object -First 1).TrimEnd()
-$sep    = '-' * $header.Length
-
-$conxLines = $netstatOut | Where-Object { $_ -match '\sESTABLISHED\s' }
-
-Write-Host 'Intruder Kicker(by: kovax00)'
-Write-Host '-----------------------------' 
-Write-Host $header
-Write-Host $sep
-$conxLines | ForEach-Object { Write-Host $_ }
-
-$selPID = Read-Host 'Introduce el PID de la conexión que deseas investigar'
-
-try {
-    $proc = Get-Process -Id $selPID -ErrorAction Stop
-    $ruta = if ($proc.Path) { $proc.Path } else {
-        (Get-CimInstance Win32_Process -Filter "ProcessId=$selPID").ExecutablePath
+function Show-Banner {
+    for ($pct = 0; $pct -le 100; $pct += 10) {
+        Write-Progress -Activity 'Inicializando escaneo' `
+                       -Status "$pct% completado" `
+                       -PercentComplete $pct
+        Start-Sleep -Milliseconds 150
     }
-} catch {
-    Write-Host 'PID no válido o proceso finalizado.' -ForegroundColor Red
-    Read-Host 'ENTER para salir'
-    exit
+    Write-Progress -Activity 'Inicializando escaneo' -Completed
+    Write-Host
 }
 
-$conxPID = $conxLines | Where-Object { ($_ -split '\s+')[-1] -eq $selPID }
+while ($true) {
+    Show-Banner
 
-Write-Host "`nConexiones asociadas al PID ${selPID}:`n"
-Write-Host $header
-Write-Host $sep
-$conxPID | ForEach-Object { Write-Host $_ }
+    $netstatOut = netstat -nao
+    $header     = ($netstatOut | Where-Object { $_ -match '^\s*Proto' } | Select-Object -First 1).TrimEnd()
+    $sep        = '-' * $header.Length
+    $conxLines  = $netstatOut | Where-Object { $_ -match '\sESTABLISHED\s' }
 
-Write-Host "`nRuta del ejecutable:`n$ruta" -ForegroundColor Green
-Read-Host 'ENTER para salir'
+    Write-Host 'Intruder Kicker (by: kovax00)'
+    Write-Host '----------------------------------'
+    Write-Host $header
+    Write-Host $sep
+    $conxLines | ForEach-Object { Write-Host $_ }
+
+    $raw = Read-Host 'Introduce los PID a investigar (14144+9588+5720) o "all"'
+    $raw = $raw.Trim()
+
+    if ($raw -match '^(?i)all$') {
+        $pidList = $conxLines |
+                   ForEach-Object { ($_ -split '\s+')[-1] } |
+                   Sort-Object -Unique
+    } else {
+        $pidList = ($raw -replace '\s','') -split '\+' | Where-Object { $_ }
+    }
+
+    foreach ($selPID in $pidList) {
+        Write-Host "`n========== PID $selPID ==========" -ForegroundColor Cyan
+
+        # ---------- obtener ruta ----------
+        $ruta = $null
+        try {
+            $proc = Get-Process -Id $selPID -ErrorAction Stop
+            $ruta = $proc.Path
+            if (-not $ruta) {
+                $ruta = (Get-CimInstance Win32_Process -Filter "ProcessId=$selPID").ExecutablePath
+            }
+        } catch {
+            Write-Host '  PID no válido o proceso finalizado.' -ForegroundColor Red
+        }
+
+        # ---------- conexiones ----------
+        $conxPID = $conxLines | Where-Object { ($_ -split '\s+')[-1] -eq $selPID }
+        if ($conxPID) {
+            Write-Host "`nConexiones asociadas:`n"
+            Write-Host $header
+            Write-Host $sep
+            $conxPID | ForEach-Object { Write-Host $_ }
+        } else {
+            Write-Host '  Sin conexiones ESTABLISHED para este PID.'
+        }
+
+        if ($ruta) {
+            Write-Host "`nRuta del ejecutable:`n  $ruta" -ForegroundColor Green
+        }
+    }
+
+    $cont = Read-Host "`n¿Desea continuar? (s/n)"
+    if ($cont -notmatch '^(s|S)$') { break }
+}
 '@
 
 Set-Content -Path $tempPath -Value $inner -Encoding UTF8
